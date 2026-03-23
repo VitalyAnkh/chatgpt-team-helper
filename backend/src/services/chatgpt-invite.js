@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { formatProxyForLog, loadDefaultProxyList, parseProxyConfig, pickProxyByHash } from '../utils/proxy.js'
+import { buildAxiosProxyOptions, formatProxyForLog, loadDefaultProxyList, parseProxyConfig, pickProxyByHash } from '../utils/proxy.js'
 import { buildChatgptAdminHeaders, getAccountChatgptId, getAccountToken } from './account-client-profile.js'
 
 const DEFAULT_TIMEOUT_MS = 60000
@@ -41,41 +41,6 @@ const isRetryableHttpStatus = (status, bodyText = '') => {
     }
   }
   return false
-}
-
-let socksProxyAgentModulePromise = null
-const socksAgentCache = new Map()
-
-async function getSocksProxyAgentModule() {
-  if (!socksProxyAgentModulePromise) {
-    socksProxyAgentModulePromise = import('socks-proxy-agent')
-  }
-  return socksProxyAgentModulePromise
-}
-
-async function getSocksAgent(proxyUrl) {
-  const url = String(proxyUrl || '').trim()
-  if (!url) return null
-
-  const cached = socksAgentCache.get(url)
-  if (cached) return cached
-
-  let module
-  try {
-    module = await getSocksProxyAgentModule()
-  } catch (error) {
-    console.error('[ChatGPTInvite] SOCKS 代理依赖缺失（socks-proxy-agent）', { message: error?.message || String(error) })
-    throw new Error('SOCKS5 代理需要安装依赖 socks-proxy-agent')
-  }
-
-  const SocksProxyAgent = module?.SocksProxyAgent || module?.default
-  if (!SocksProxyAgent) {
-    throw new Error('SOCKS5 代理依赖 socks-proxy-agent 加载失败')
-  }
-
-  const agent = new SocksProxyAgent(url)
-  socksAgentCache.set(url, agent)
-  return agent
 }
 
 const loadInviteProxyList = async () => loadDefaultProxyList()
@@ -136,23 +101,10 @@ export async function inviteUserToChatGPTTeam(email, accountData, options = {}) 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const proxyEntry = pickProxy(attempt)
     const proxyUrl = proxyEntry?.url || ''
-    const proxyConfig = proxyEntry?.config || null
     const proxyLabel = proxyUrl ? formatProxyForLog(proxyUrl) : null
-    const protocol = String(proxyConfig?.protocol || '').toLowerCase()
-    const isSocksProxy = protocol.startsWith('socks')
-
-    let socksAgent = null
-    if (isSocksProxy && proxyUrl) {
-      try {
-        socksAgent = await getSocksAgent(proxyUrl)
-      } catch (error) {
-        lastError = error
-        console.error('[ChatGPTInvite] socks agent init failed', { proxy: proxyLabel, message: error?.message || String(error) })
-        break
-      }
-    }
 
     try {
+      const axiosProxyOptions = await buildAxiosProxyOptions(proxyUrl)
       const response = await axios.request({
         url,
         method: 'POST',
@@ -160,9 +112,7 @@ export async function inviteUserToChatGPTTeam(email, accountData, options = {}) 
         data,
         timeout: timeoutMs,
         validateStatus: () => true,
-        proxy: socksAgent ? false : (proxyConfig || false),
-        httpAgent: socksAgent || undefined,
-        httpsAgent: socksAgent || undefined,
+        ...axiosProxyOptions,
       })
 
       if (response.status >= 200 && response.status < 300) {

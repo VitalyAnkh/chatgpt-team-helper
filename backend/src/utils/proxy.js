@@ -285,13 +285,31 @@ export function buildProxyUrlFromConfig(proxyConfig) {
 }
 
 let socksProxyAgentModulePromise = null
+let httpProxyAgentModulePromise = null
+let httpsProxyAgentModulePromise = null
 const socksAgentCache = new Map()
+const httpProxyAgentCache = new Map()
+const httpsProxyAgentCache = new Map()
 
 async function getSocksProxyAgentModule() {
   if (!socksProxyAgentModulePromise) {
     socksProxyAgentModulePromise = import('socks-proxy-agent')
   }
   return socksProxyAgentModulePromise
+}
+
+async function getHttpProxyAgentModule() {
+  if (!httpProxyAgentModulePromise) {
+    httpProxyAgentModulePromise = import('http-proxy-agent')
+  }
+  return httpProxyAgentModulePromise
+}
+
+async function getHttpsProxyAgentModule() {
+  if (!httpsProxyAgentModulePromise) {
+    httpsProxyAgentModulePromise = import('https-proxy-agent')
+  }
+  return httpsProxyAgentModulePromise
 }
 
 async function getSocksAgent(proxyUrl) {
@@ -309,6 +327,42 @@ async function getSocksAgent(proxyUrl) {
 
   const agent = new SocksProxyAgent(url)
   socksAgentCache.set(url, agent)
+  return agent
+}
+
+async function getHttpProxyAgent(proxyUrl) {
+  const url = String(proxyUrl || '').trim()
+  if (!url) return null
+
+  const cached = httpProxyAgentCache.get(url)
+  if (cached) return cached
+
+  const module = await getHttpProxyAgentModule()
+  const HttpProxyAgent = module?.HttpProxyAgent || module?.default
+  if (!HttpProxyAgent) {
+    throw new Error('HTTP 代理依赖 http-proxy-agent 加载失败')
+  }
+
+  const agent = new HttpProxyAgent(url)
+  httpProxyAgentCache.set(url, agent)
+  return agent
+}
+
+async function getHttpsProxyAgent(proxyUrl) {
+  const url = String(proxyUrl || '').trim()
+  if (!url) return null
+
+  const cached = httpsProxyAgentCache.get(url)
+  if (cached) return cached
+
+  const module = await getHttpsProxyAgentModule()
+  const HttpsProxyAgent = module?.HttpsProxyAgent || module?.default
+  if (!HttpsProxyAgent) {
+    throw new Error('HTTPS 代理依赖 https-proxy-agent 加载失败')
+  }
+
+  const agent = new HttpsProxyAgent(url)
+  httpsProxyAgentCache.set(url, agent)
   return agent
 }
 
@@ -335,10 +389,17 @@ export async function buildAxiosProxyOptions(proxy) {
     }
   }
 
+  // Avoid Axios' built-in proxy mode here. Explicit agents properly tunnel
+  // HTTPS upstream traffic through both HTTP and HTTPS proxies via CONNECT.
+  const [httpAgent, httpsAgent] = await Promise.all([
+    getHttpProxyAgent(proxyUrl),
+    getHttpsProxyAgent(proxyUrl),
+  ])
+
   return {
-    proxy: proxyConfig,
-    httpAgent: undefined,
-    httpsAgent: undefined,
+    proxy: false,
+    httpAgent: httpAgent || undefined,
+    httpsAgent: httpsAgent || undefined,
   }
 }
 
